@@ -1,23 +1,32 @@
-﻿using System;
+﻿using CefSharp;
+using CefSharp.WinForms;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
 using System.Drawing;
+using System.Globalization;
 using System.IO.Ports;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
+
+
 namespace POO_PortSerie
 {
+    
     public partial class FenetrePrincipale : Form
     {
         private SerialPort portALire;
         private SerialPort portAEcrire;
+        private ChromiumWebBrowser chromiumBrowser;
+        private string derniereUrlChargee = "";// Permet d'éviter de recharger la page toutes les secondes si la position n'a pas bougé
         public FenetrePrincipale()
         {
             InitializeComponent();
+            InitialiserNavigateur();
         }
 
         private void FenetrePrincipale_Load(object sender, EventArgs e)
@@ -42,6 +51,77 @@ namespace POO_PortSerie
                 MessageBox.Show("pas de port serie detecté sur cet ordi");
                 bOuvrirFermer.Enabled = false;
             }
+        }
+        private void InitialiserNavigateur()
+        {
+            CefSettings settings = new CefSettings();
+            // Initialisation de CefSharp (obligatoire une seule fois par application)
+            if (Cef.IsInitialized == false)
+            {
+                Cef.Initialize(settings);
+            }
+
+            // On crée le navigateur avec une page d'attente
+            chromiumBrowser = new ChromiumWebBrowser("https://www.google.com/maps");
+            chromiumBrowser.Dock = DockStyle.Fill; // Remplir tout le Panel
+            pBrowser.Controls.Add(chromiumBrowser);
+        }
+        private void MettreAJourCarte(string trameGPGGA)
+        {
+            string[] parts = trameGPGGA.Split(',');
+
+            // Vérification basique qu'on a bien les infos nécessaires dans le tableau
+            if (parts.Length >= 6 && !string.IsNullOrEmpty(parts[2]) && !string.IsNullOrEmpty(parts[4]))
+            {
+                string latitudeNMEA = parts[2];
+                string nordSud = parts[3];
+                string longitudeNMEA = parts[4];
+                string estOuest = parts[5];
+
+                // Conversion NMEA (DDMM.MMMM) vers Degrés Décimaux
+                string latDec = ConvertirNmeaEnDecimal(latitudeNMEA, nordSud);
+                string lonDec = ConvertirNmeaEnDecimal(longitudeNMEA, estOuest);
+
+                // On génère le lien Google Maps avec zoom (z=15 par exemple)
+                string nouvelleUrl = $"https://www.google.com/maps?q={latDec},{lonDec}&z=15";
+
+                // On ne recharge la page que si les coordonnées ont changé (pour éviter le clignotement)
+                if (nouvelleUrl != derniereUrlChargee)
+                {
+                    if (chromiumBrowser != null && chromiumBrowser.IsBrowserInitialized == true)
+                    {
+                        chromiumBrowser.LoadUrl(nouvelleUrl);
+                        derniereUrlChargee = nouvelleUrl;
+                    }
+                }
+            }
+        }
+        private string ConvertirNmeaEnDecimal(string nmeaCoord, string direction)
+        {
+            // Les trames NMEA sont sous la forme DDMM.MMMM (Lat) ou DDDMM.MMMM (Lon)
+            int indexPoint = nmeaCoord.IndexOf('.');
+            if (indexPoint < 2) return "0";
+
+            // On sépare les degrés des minutes
+            int longueurDegres = indexPoint - 2;
+            string degresStr = nmeaCoord.Substring(0, longueurDegres);
+            string minutesStr = nmeaCoord.Substring(longueurDegres);
+
+            // InvariantCulture permet de forcer la lecture du "." comme séparateur décimal (ignorer la virgule française)
+            double degres = double.Parse(degresStr, CultureInfo.InvariantCulture);
+            double minutes = double.Parse(minutesStr, CultureInfo.InvariantCulture);
+
+            // Formule : Degrés Décimaux = Degrés + (Minutes / 60)
+            double degresDecimaux = degres + (minutes / 60.0);
+
+            // Hémisphère Sud ou Ouest = Valeur négative
+            if (direction == "S" || direction == "W")
+            {
+                degresDecimaux *= -1;
+            }
+
+            // On renvoie un string formaté avec un point pour l'URL Google Maps
+            return degresDecimaux.ToString(CultureInfo.InvariantCulture);
         }
 
         private void bOuvrirFermer_Click(object sender, EventArgs e)
@@ -87,6 +167,10 @@ namespace POO_PortSerie
 
                     tbSortie.SelectionStart = tbSortie.Text.Length;
                     tbSortie.ScrollToCaret();
+                    if (data.StartsWith("$GPGGA"))
+                    {
+                        MettreAJourCarte(data); 
+                    }
                 });
             }
             catch (Exception ex)
@@ -102,6 +186,7 @@ namespace POO_PortSerie
                 portALire.Close();   
             }
             portAEcrire?.Close();
+            Cef.Shutdown();
         }
 
         private void cmbPorts_SelectedIndexChanged(object sender, EventArgs e)
